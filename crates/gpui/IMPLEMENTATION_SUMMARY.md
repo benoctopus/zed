@@ -130,12 +130,10 @@ Plugin developers can test by:
 
 ## Current Limitations
 
-1. **macOS**: API ready, implementation needed (NSView attachment)
-2. **Linux X11**: API ready, implementation needed (Window attachment)
-3. **Linux Wayland**: API ready, implementation needed (wl_surface attachment)
-4. **Event handling**: Events must come from host's message pump
-5. **Resize notifications**: Host must manually notify GPUI of size changes
-6. **Focus management**: Handled by host, not GPUI
+1. **Linux X11**: API ready, implementation needed (Window attachment)
+2. **Linux Wayland**: API ready, implementation needed (wl_surface attachment)
+3. **Event handling**: Events must come from host's message pump
+4. **Focus management**: Handled by host, not GPUI
 
 ## Future Work
 
@@ -183,11 +181,12 @@ Embedded windows have identical rendering performance to normal windows since:
 
 This implementation successfully adds embedded window support to GPUI with:
 - ✅ Complete Windows implementation
+- ✅ Complete macOS implementation
 - ✅ Clean public API
 - ✅ Minimal code changes
 - ✅ Full backwards compatibility
 - ✅ Comprehensive documentation
-- ✅ Example code
-- ⚠️  macOS/Linux stubs ready for implementation
+- ✅ Example code for Windows and macOS
+- ⚠️  Linux stubs ready for implementation
 
-The foundation is solid and ready for plugin development on Windows, with a clear path to complete macOS and Linux support.
+The foundation is solid and ready for plugin development on Windows and macOS, with a clear path to complete Linux support.

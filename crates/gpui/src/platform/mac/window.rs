@@ -587,11 +587,24 @@ impl MacWindow {
         executor: ForegroundExecutor,
         renderer_context: renderer::Context,
     ) -> Self {
-        // TODO: Implement embedded window support for macOS
-        // When raw_window_handle is Some, we should attach to the existing NSView
-        // instead of creating a new NSWindow
-        if raw_window_handle.is_some() {
-            unimplemented!("Embedded window support for macOS is not yet implemented. The API is available but the platform-specific code needs to be added.");
+        // If raw_window_handle is provided, use embedded mode
+        if let Some(raw_handle) = raw_window_handle {
+            let params_for_embedded = WindowParams {
+                bounds,
+                titlebar,
+                kind,
+                is_movable,
+                is_resizable,
+                is_minimizable,
+                focus,
+                show,
+                display_id,
+                window_min_size,
+                tabbing_identifier: tabbing_identifier.clone(),
+                raw_window_handle: Some(raw_handle),
+            };
+            return Self::open_embedded(handle, params_for_embedded, raw_handle, executor, renderer_context)
+                .expect("Failed to create embedded macOS window");
         }
         
         unsafe {
@@ -2668,6 +2681,249 @@ extern "C" fn toggle_tab_bar(this: &Object, _sel: Sel, _id: id) {
             drop(lock);
             callback();
             window_state.lock().toggle_tab_bar_callback = Some(callback);
+        }
+    }
+}
+
+// ============================================================================
+// Embedded Window Support for macOS
+// ============================================================================
+// Support for embedding GPUI windows into existing NSView handles
+// This is useful for plugins (VST, CLAP, AU) and other host applications
+
+impl MacWindow {
+    /// Create a MacWindow that attaches to an existing NSView instead of creating a new NSWindow
+    pub fn open_embedded(
+        handle: AnyWindowHandle,
+        params: WindowParams,
+        raw_handle: rwh::RawWindowHandle,
+        executor: ForegroundExecutor,
+        renderer_context: renderer::Context,
+    ) -> anyhow::Result<Self> {
+        // Extract NSView from the raw window handle
+        let native_view = match raw_handle {
+            rwh::RawWindowHandle::AppKit(appkit_handle) => {
+                appkit_handle.ns_view.as_ptr() as id
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Expected AppKit window handle for macOS platform, got {:?}",
+                    raw_handle
+                ))
+            }
+        };
+
+        unsafe {
+            let pool = cocoa::foundation::NSAutoreleasePool::new(nil);
+
+            // Validate that the NSView is valid
+            if native_view.is_null() {
+                return Err(anyhow::anyhow!("Invalid NSView provided: null pointer"));
+            }
+
+            // Check if it's actually an NSView
+            let is_view: bool = msg_send![native_view, isKindOfClass: class!(NSView)];
+            if !is_view {
+                return Err(anyhow::anyhow!(
+                    "Provided handle is not an NSView: {:?}",
+                    native_view
+                ));
+            }
+
+            // Get the view's bounds to determine size
+            let view_bounds: NSRect = msg_send![native_view, bounds];
+            let size = size(
+                Pixels(view_bounds.size.width as f32),
+                Pixels(view_bounds.size.height as f32),
+            );
+
+            // Get the window that contains this view (if any)
+            let native_window: id = msg_send![native_view, window];
+
+            // Create our GPUI view that will be a subview of the provided NSView
+            let gpui_view: id = msg_send![VIEW_CLASS, alloc];
+            let gpui_view = NSView::initWithFrame_(gpui_view, view_bounds);
+            assert!(!gpui_view.is_null());
+
+            // Set up autoresizing so our view follows the parent
+            let autoresizing_mask = NSViewWidthSizable | NSViewHeightSizable;
+            let () = msg_send![gpui_view, setAutoresizingMask: autoresizing_mask];
+
+            // Create window state and renderer BEFORE adding as subview
+            // This is important because addSubview may trigger view lifecycle methods
+            // that expect the WINDOW_STATE_IVAR to be set
+            let renderer_window_ptr = if !native_window.is_null() {
+                native_window as *mut _
+            } else {
+                native_view as *mut _
+            };
+
+            let renderer = renderer::new_renderer(
+                renderer_context,
+                renderer_window_ptr,
+                gpui_view as *mut _,
+                size.map(|pixels| pixels.0),
+                false,
+            );
+
+            let window_state = Arc::new(Mutex::new(MacWindowState {
+                handle,
+                executor,
+                native_window, // This might be nil if the view isn't in a window yet
+                native_view: NonNull::new_unchecked(gpui_view),
+                blurred_view: None,
+                display_link: None,
+                renderer,
+                request_frame_callback: None,
+                event_callback: None,
+                activate_callback: None,
+                resize_callback: None,
+                moved_callback: None,
+                should_close_callback: None,
+                close_callback: None,
+                appearance_changed_callback: None,
+                input_handler: None,
+                last_key_equivalent: None,
+                synthetic_drag_counter: 0,
+                traffic_light_position: None,
+                transparent_titlebar: false,
+                previous_modifiers_changed_event: None,
+                keystroke_for_do_command: None,
+                do_command_handled: None,
+                external_files_dragged: false,
+                first_mouse: false,
+                fullscreen_restore_bounds: Bounds::default(),
+                move_tab_to_new_window_callback: None,
+                merge_all_windows_callback: None,
+                select_next_tab_callback: None,
+                select_previous_tab_callback: None,
+                toggle_tab_bar_callback: None,
+                activated_least_once: false,
+            }));
+
+            let window = Self(window_state.clone());
+
+            // Set the window state as an associated object on our view
+            // CRITICAL: This must be done BEFORE adding the view as a subview
+            (*gpui_view).set_ivar(
+                WINDOW_STATE_IVAR,
+                Arc::into_raw(window_state.clone()) as *const c_void,
+            );
+
+            // Now it's safe to add our view as a subview
+            let () = msg_send![native_view, addSubview: gpui_view];
+
+            // Register for drag and drop if we have a window
+            if !native_window.is_null() {
+                use cocoa::foundation::NSArray;
+                let () = msg_send![
+                    native_window,
+                    registerForDraggedTypes:
+                        NSArray::arrayWithObject(nil, cocoa::appkit::NSFilenamesPboardType)
+                ];
+            }
+
+            // Set up tracking area for mouse events
+            let tracking_area = create_tracking_area(gpui_view);
+            let () = msg_send![gpui_view, addTrackingArea: tracking_area];
+
+            // Make our view the first responder if possible
+            if !native_window.is_null() {
+                let can_become: bool = msg_send![gpui_view, acceptsFirstResponder];
+                if can_become {
+                    let () = msg_send![native_window, makeFirstResponder: gpui_view];
+                }
+            }
+
+            // Set up display link for rendering
+            window.setup_display_link();
+
+            let _: () = msg_send![pool, release];
+
+            Ok(window)
+        }
+    }
+
+    /// Setup display link for frame timing in embedded mode
+    fn setup_display_link(&self) {
+        let mut state = self.0.lock();
+        
+        // Get the display for the view
+        let display_id = unsafe {
+            if !state.native_window.is_null() {
+                display_id_for_screen(state.native_window.screen())
+            } else {
+                MacDisplay::primary().0
+            }
+        };
+        
+        // Use the same step callback as regular windows
+        if let Some(mut display_link) =
+            DisplayLink::new(display_id, state.native_view.as_ptr() as *mut c_void, step).log_err()
+        {
+            display_link.start().log_err();
+            state.display_link = Some(display_link);
+        }
+    }
+}
+
+/// Helper to create a tracking area for mouse events
+unsafe fn create_tracking_area(view: id) -> id {
+    use cocoa::foundation::NSRect;
+    
+    let bounds: NSRect = msg_send![view, bounds];
+    let options = NSTrackingMouseEnteredAndExited
+        | NSTrackingMouseMoved
+        | NSTrackingActiveAlways
+        | NSTrackingInVisibleRect;
+    
+    let tracking_area: id = msg_send![
+        class!(NSTrackingArea),
+        alloc
+    ];
+    
+    msg_send![
+        tracking_area,
+        initWithRect: bounds
+        options: options
+        owner: view
+        userInfo: nil
+    ]
+}
+
+/// Helper methods specific to embedded windows
+impl MacWindow {
+    /// Check if this is an embedded window (attached to an external NSView)
+    pub fn is_embedded(&self) -> bool {
+        let state = self.0.lock();
+        // Embedded windows might not have a native_window, or the window
+        // won't be one we created
+        // For now, we can detect this by checking if we have window callbacks
+        state.native_window.is_null() || state.move_tab_to_new_window_callback.is_none()
+    }
+
+    /// Notify the embedded window of a size change from the host
+    /// This should be called when the parent NSView resizes
+    pub fn notify_host_resize(&self, new_size: Size<Pixels>) {
+        let mut state = self.0.lock();
+        
+        // Get the current scale factor from the screen
+        let scale_factor = unsafe {
+            if !state.native_window.is_null() {
+                let screen: id = msg_send![state.native_window, screen];
+                if !screen.is_null() {
+                    let backing_scale: f64 = msg_send![screen, backingScaleFactor];
+                    backing_scale as f32
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            }
+        };
+        
+        if let Some(ref mut callback) = state.resize_callback {
+            callback(new_size, scale_factor);
         }
     }
 }

@@ -49,8 +49,12 @@ app.run(|cx| {
 #### macOS
 
 - Pass an `NSView*` via `AppKitWindowHandle`
-- Metal will attach to the view's CAMetalLayer
-- Similar constraints as Windows
+- GPUI creates a subview within the provided NSView
+- Metal renderer attaches to the GPUI subview
+- Automatically handles retina/high-DPI displays
+- Display link is set up for proper frame timing
+- Supports `notify_host_resize()` for host-driven size changes
+- Autoresizing mask is set so the view follows parent resizing
 
 #### Linux (X11/Wayland)
 
@@ -148,7 +152,7 @@ The `new_embedded` implementation:
 ### Current Status
 
 - ✅ Windows: Fully implemented
-- ⚠️  macOS: API ready, implementation needed
+- ✅ macOS: Fully implemented
 - ⚠️  Linux: API ready, implementation needed
 
 ### Testing
@@ -163,9 +167,10 @@ This creates a simple Win32 window and embeds GPUI into it, demonstrating the ba
 
 ### Future Enhancements
 
-- [ ] macOS NSView embedding
+- [x] macOS NSView embedding
 - [ ] Linux X11/Wayland embedding  
 - [ ] Better event handling for embedded contexts
-- [ ] Host-to-GPUI size/scale change notifications
+- [x] Host-to-GPUI size/scale change notifications (via `notify_host_resize()`)
 - [ ] Better focus management in embedded mode
 - [ ] Example CLAP plugin implementation
+- [ ] Example AU plugin implementation
