@@ -726,6 +726,11 @@ impl LinuxClient for WaylandClient {
         handle: AnyWindowHandle,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
+        // TODO: Implement embedded window support for Wayland
+        if params.raw_window_handle.is_some() {
+            anyhow::bail!("Embedded window support for Wayland is not yet implemented");
+        }
+        
         let mut state = self.0.borrow_mut();
 
         let parent = state

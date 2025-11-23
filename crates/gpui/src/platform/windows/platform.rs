@@ -446,9 +446,16 @@ impl Platform for WindowsPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
-        let handle = window.get_raw_handle();
-        self.raw_window_handles.write().push(handle.into());
+        let window = if let Some(raw_handle) = options.raw_window_handle {
+            // Embedded mode: attach to existing window handle
+            WindowsWindow::new_embedded(handle, options, self.generate_creation_info(), raw_handle)?
+        } else {
+            // Normal mode: create a new OS window
+            WindowsWindow::new(handle, options, self.generate_creation_info())?
+        };
+        
+        let window_handle = window.get_raw_handle();
+        self.raw_window_handles.write().push(window_handle.into());
 
         Ok(Box::new(window))
     }

@@ -582,10 +582,18 @@ impl MacWindow {
             display_id,
             window_min_size,
             tabbing_identifier,
+            raw_window_handle,
         }: WindowParams,
         executor: ForegroundExecutor,
         renderer_context: renderer::Context,
     ) -> Self {
+        // TODO: Implement embedded window support for macOS
+        // When raw_window_handle is Some, we should attach to the existing NSView
+        // instead of creating a new NSWindow
+        if raw_window_handle.is_some() {
+            unimplemented!("Embedded window support for macOS is not yet implemented. The API is available but the platform-specific code needs to be added.");
+        }
+        
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 

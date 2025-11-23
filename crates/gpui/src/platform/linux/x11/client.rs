@@ -1474,6 +1474,11 @@ impl LinuxClient for X11Client {
         handle: AnyWindowHandle,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
+        // TODO: Implement embedded window support for X11
+        if params.raw_window_handle.is_some() {
+            anyhow::bail!("Embedded window support for X11 is not yet implemented");
+        }
+        
         let mut state = self.0.borrow_mut();
         let parent_window = state
             .keyboard_focused_window

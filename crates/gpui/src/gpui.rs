@@ -19,6 +19,7 @@ mod color;
 pub mod colors;
 mod element;
 mod elements;
+mod embedded;
 mod executor;
 mod geometry;
 mod global;
